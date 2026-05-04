@@ -1,35 +1,21 @@
 import time
 from collections import Counter
 import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.model_selection import cross_val_score, KFold, cross_validate
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, make_scorer
+import pandas as pd
 
-# 1. Функция загрузки данных из файла
-def load_dataset(filename):
-    """
-    Загружает данные из текстового файла, где каждая строка содержит:
-    продукт сладость хруст класс
-    (поля разделены пробелами или табуляцией)
-    Возвращает список кортежей (продукт, сладость, хруст, класс)
-    """
-    data = []
-    with open(filename, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue  # пропускаем пустые строки
-            parts = line.split()
-            if len(parts) < 4:
-                continue  # недостаточно полей – пропускаем
-            product = parts[0]
-            try:
-                sweet = int(parts[1])
-                crunch = int(parts[2])
-            except ValueError:
-                continue  # если не числа – пропускаем
-            cls = parts[3]
-            data.append((product, sweet, crunch, cls))
-    return data
+# 1. Датасет и использование их
+df = pd.DataFrame(
+    {
+        "Продукт": ["Яблоко", "Салат","Бекон","Банан","Орехи","Рыба","Сыр","Виноград","Морковь","Апельсин"],
+        "Сладость": [7, 2, 1, 9, 1, 1, 1, 8, 2, 6],
+        "Хруст": [7, 5, 2, 1, 5, 1, 1, 1, 8, 1],
+        "Класс": ["Фрукт", "Овощ", "Протеин","Фрукт","Протеин", "Протеин", "Протеин", "Фрукт", "Овощ", "Фрукт"]
+    }
+)
 
 # 2. Подготовка данных для k-NN (признаки + метки)
 def prepare_data(data_list, exclude_class=None):
@@ -39,10 +25,11 @@ def prepare_data(data_list, exclude_class=None):
     Если указан exclude_class, записи с этим классом исключаются.
     """
     features_labels = []
-    for _, sweet, crunch, cls in data_list:
+    for _, row in data_list.iterrows():
+        cls = row["Класс"]
         if exclude_class and cls == exclude_class:
             continue
-        features_labels.append(((sweet, crunch), cls))
+        features_labels.append(((row["Сладость"], row["Хруст"]), cls))
     return features_labels
 
 # 3. Евклидово расстояние между двумя точками
@@ -118,8 +105,22 @@ def visualize(train_data, title):
     plt.title(title)
     plt.grid(True)
     plt.show()
+# 7. Кросс-валидация
+def cross_validate_sklearn(df, k_values, n_folds=5):
+    X = df[["Сладость", "Хруст"]].values
+    y = df["Класс"].values
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
+    results = {}
 
-# 7. Проведение эксперимента для заданного набора данных и k
+    for k in k_values:
+        knn = KNeighborsClassifier(n_neighbors=k)
+        # cross_validate возвращает словарь с ключами 'test_score', 'fit_time', 'score_time'
+        cv_results = cross_validate(knn, X, y, cv=kf, scoring=make_scorer(accuracy_score),
+                                    return_train_score=False)
+        test_scores = cv_results['test_score']
+        results[k] = {'mean': np.mean(test_scores), 'std': np.std(test_scores)}
+    return results
+# 8. Проведение эксперимента для заданного набора данных и k
 def run_experiment(train_data_list, test_samples, experiment_name, k):
     """
     train_data_list: список (продукт, сладость, хруст, класс) для обучения
@@ -142,16 +143,16 @@ def run_experiment(train_data_list, test_samples, experiment_name, k):
     # --- sklearn k-NN ---
     X_train = [feat for feat, _ in train_features_labels]
     y_train = [label for _, label in train_features_labels]
-    X_test = test_points
 
     start = time.time()
     knn_sk = KNeighborsClassifier(n_neighbors=k)
     knn_sk.fit(X_train, y_train)
+    sk_preds = knn_sk.predict(test_points)
     sk_time = time.time() - start
 
     # Вычисляем точность
     manual_acc = sum(1 for i, p in enumerate(manual_preds) if p == true_labels[i]) / len(true_labels)
-    sk_acc = knn_sk.score(X_test, true_labels)
+    sk_acc = accuracy_score(true_labels, sk_preds)
 
     print(f"Ручной k-NN   : точность = {manual_acc:.2f}, время = {manual_time:.5f} сек")
     print(f"sklearn k-NN  : точность = {sk_acc:.2f}, время = {sk_time:.5f} сек")
@@ -160,18 +161,8 @@ def run_experiment(train_data_list, test_samples, experiment_name, k):
     visualize(train_features_labels, f"{experiment_name}")
     return manual_acc, sk_acc, manual_time, sk_time
 
-# Шаг 1: загружаем исходный датасет из файла
-input_file = "food_data.txt"
-original_data = ''
-try:
-    original_data = load_dataset(input_file)
-    print(f"Загружено {len(original_data)} записей из '{input_file}'.")
-except FileNotFoundError:
-    print(f"Ошибка: файл '{input_file}' не найден.")
-    print("Убедитесь, что файл существует и имеет формат:")
-    print("продукт,сладость,хруст,класс")
-
-# Шаг 2: пользователь вводит значение k
+# Шаг 1: пользователь вводит значение k
+k=0
 try:
     k = int(input("Введите значение k (количество соседей): "))
     if k <= 0:
@@ -179,12 +170,38 @@ try:
 except ValueError:
     print("Ошибка: k должно быть положительным целым числом.")
 
+# Шаг 2: Проводим Кросс-валидацию данных
+# Формируем список k для проверки (вокруг введённого значения)
+neighborhood = 2
+k_min = max(1, k - neighborhood)
+k_max = k + neighborhood
+k_values = list(range(k_min, k_max + 1))
+
+X = df[["Сладость", "Хруст"]].values
+y = df["Класс"].values
+
+# Создаём 5-кратный KFold с перемешиванием
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+
+print(f"\n--- Кросс-валидация (5-fold) для k = {k_values} ---")
+for test_k in k_values:
+    knn = KNeighborsClassifier(n_neighbors=test_k)
+    scores = cross_val_score(knn, X, y, cv=kf, scoring='accuracy')
+    print(f"k={test_k}: средняя точность = {scores.mean():.3f} (+/- {scores.std():.3f})")
+
 # Шаг 3: эксперимент 1 – без класса Злаки
-old_train_data = [row for row in original_data if row[3] != "Злаки"]  # исходные без злаков
+df_no_grains = df[df["Класс"] != "Злаки"].copy()
 test_old = get_test_samples('old')
-run_experiment(old_train_data, test_old, "Классификация продуктов", k)
+run_experiment(df_no_grains, test_old, "Классификация продуктов", k)
 
 # Шаг 4: эксперимент 2 – с классом Злаки
-extended_data = [row for row in original_data]
+# Добавляем продукты класса Злаки (так как в исходном датасете их нет)
+extra_grains = pd.DataFrame([
+    ["Мюсли", 4, 9, "Злаки"],
+    ["Овсянка", 3, 8, "Злаки"],
+    ["Гранола", 5, 9, "Злаки"]
+], columns=["Продукт", "Сладость", "Хруст", "Класс"])
+df_extended = pd.concat([df, extra_grains], ignore_index=True)
+
 test_new = get_test_samples('new')
-run_experiment(extended_data, test_new, "Классификация продуктов", k)
+run_experiment(df_extended, test_new, "Классификация продуктов", k)
